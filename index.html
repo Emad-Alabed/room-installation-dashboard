@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Live Room Installation Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script type="module">
+        // Import necessary Firebase functions.
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, getDoc, setDoc, onSnapshot, collection, query } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Global variables provided by the environment. Do not modify these.
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        let db;
+        let auth;
+        let userId;
+        const projectCollectionPath = `artifacts/${appId}/public/data/project_status`;
+
+        // Wait for the window to load before starting the app.
+        window.onload = init;
+
+        /**
+         * Initializes the application by setting up Firebase and fetching data.
+         */
+        async function init() {
+            try {
+                // Display loading indicator
+                document.getElementById('loadingIndicator').classList.remove('hidden');
+                document.getElementById('mainContent').classList.add('hidden');
+                document.getElementById('errorContainer').classList.add('hidden');
+
+                // Initialize Firebase services
+                const app = initializeApp(firebaseConfig);
+                db = getFirestore(app);
+                auth = getAuth(app);
+
+                // Authenticate the user
+                if (initialAuthToken) {
+                    await signInWithCustomToken(auth, initialAuthToken);
+                } else {
+                    await signInAnonymously(auth);
+                }
+
+                // Wait for the auth state to be ready
+                onAuthStateChanged(auth, (user) => {
+                    if (user) {
+                        userId = user.uid;
+                        document.getElementById('userIdDisplay').textContent = `User ID: ${userId}`;
+                        console.log(`User authenticated with UID: ${userId}`);
+                        startFirestoreListener();
+                    } else {
+                        console.error("Authentication failed. Please refresh the page.");
+                        document.getElementById('errorContainer').classList.remove('hidden');
+                    }
+                });
+            } catch (error) {
+                console.error("Failed to initialize Firebase:", error);
+                document.getElementById('errorContainer').classList.remove('hidden');
+            }
+        }
+
+        /**
+         * Sets up a real-time listener for the project status in Firestore.
+         */
+        function startFirestoreListener() {
+            // Remove the outer try...catch as the onSnapshot has its own error handler
+            const projectStatusRef = collection(db, projectCollectionPath);
+            const q = query(projectStatusRef);
+
+            // Listen for real-time changes
+            onSnapshot(q, (snapshot) => {
+                // Success callback: update the UI to show data and hide errors
+                console.log("onSnapshot success: Data received.");
+                const roomData = {};
+                snapshot.forEach((doc) => {
+                    const data = doc.data();
+                    const key = doc.id;
+                    roomData[key] = data.isInstalled;
+                });
+                
+                updateDashboard(roomData);
+                document.getElementById('loadingIndicator').classList.add('hidden');
+                document.getElementById('mainContent').classList.remove('hidden');
+                document.getElementById('errorContainer').classList.add('hidden'); // Always hide the error container on a successful snapshot
+                
+                // Add a welcome message if the dashboard is empty
+                if (Object.keys(roomData).length === 0) {
+                    displayMessage("Welcome! The dashboard is currently empty. You can add sample data to get started.");
+                } else {
+                     clearMessage();
+                }
+            }, (error) => {
+                // Error callback: update the UI to show an error and hide everything else
+                console.error("Error getting real-time updates:", error);
+                document.getElementById('loadingIndicator').classList.add('hidden');
+                document.getElementById('mainContent').classList.add('hidden');
+                document.getElementById('errorContainer').classList.remove('hidden');
+            });
+        }
+
+        /**
+         * Adds a single document to the Firestore collection.
+         * This function can be used to manually add data to test the dashboard.
+         */
+        async function addRoom(floor, roomNumber) {
+            const roomKey = `${floor}_${roomNumber}`;
+            const roomDocRef = doc(db, projectCollectionPath, roomKey);
+            
+            try {
+                await setDoc(roomDocRef, {
+                    floor: floor,
+                    roomNumber: roomNumber,
+                    isInstalled: false,
+                    lastUpdated: new Date().toISOString()
+                });
+                console.log(`Document for room ${roomKey} added successfully.`);
+            } catch (e) {
+                console.error("Error adding document: ", e);
+            }
+        }
+
+        /**
+         * Adds a batch of sample rooms to the Firestore database for demonstration.
+         */
+        async function addSampleData() {
+            const floors = [8, 9, 10];
+            const roomsPerFloor = 5;
+            
+            for (const floor of floors) {
+                for (let i = 1; i <= roomsPerFloor; i++) {
+                    const roomNumber = (floor - 1) * roomsPerFloor + i;
+                    await addRoom(floor, roomNumber);
+                }
+            }
+        }
+
+        /**
+         * Updates the status of a specific room in the Firestore database.
+         * @param {string} roomKey The key for the room (e.g., "8_1").
+         * @param {boolean} isInstalled The new installation status.
+         */
+        async function updateRoomStatus(roomKey, isInstalled) {
+            const roomDocRef = doc(db, projectCollectionPath, roomKey);
+            try {
+                await setDoc(roomDocRef, { isInstalled }, { merge: true });
+                console.log(`Room ${roomKey} updated to installed: ${isInstalled}`);
+            } catch (e) {
+                console.error("Error updating document:", e);
+            }
+        }
+
+        /**
+         * Displays a message to the user in the custom message box.
+         * @param {string} message The message to display.
+         */
+        function displayMessage(message) {
+            const messageBox = document.getElementById('messageBox');
+            document.getElementById('messageText').textContent = message;
+            messageBox.classList.remove('hidden');
+        }
+
+        /**
+         * Clears the custom message box.
+         */
+        function clearMessage() {
+            const messageBox = document.getElementById('messageBox');
+            messageBox.classList.add('hidden');
+        }
+
+        // --- Dashboard UI functions ---
+        
+        /**
+         * Creates a clickable floor section with rooms.
+         * @param {number} floor The floor number.
+         * @param {Array<string>} roomKeys An array of room keys for the floor.
+         * @param {Object} roomData The full room data object.
+         * @returns {string} The HTML string for the floor section.
+         */
+        function createFloorSection(floor, roomKeys, roomData) {
+            let completedRoomsOnFloor = 0;
+            const roomsHtml = roomKeys.map(key => {
+                const isInstalled = roomData[key];
+                if (isInstalled) {
+                    completedRoomsOnFloor++;
+                }
+                const statusClass = isInstalled ? 'bg-green-500' : 'bg-gray-300';
+                const roomNumber = key.split('_')[1];
+                return `<div id="room-${key}" data-key="${key}" class="room-box w-12 h-12 flex items-center justify-center rounded-lg shadow-md transition-all duration-200 cursor-pointer hover:scale-105 ${statusClass}">
+                            <span class="text-sm font-semibold text-white">${roomNumber}</span>
+                        </div>`;
+            }).join('');
+            
+            const floorPercentage = roomKeys.length > 0 ? (completedRoomsOnFloor / roomKeys.length) * 100 : 0;
+            const progressHtml = `<div class="w-full bg-gray-200 rounded-full h-4 overflow-hidden shadow-inner">
+                                    <div class="bg-gradient-to-r from-green-400 to-green-600 h-4 rounded-full" style="width: ${floorPercentage}%;"></div>
+                                  </div>`;
+
+            return `
+                <div class="p-6 bg-white rounded-xl shadow-lg mb-6">
+                    <div class="flex justify-between items-center mb-4">
+                        <h3 class="text-lg font-semibold text-gray-800">Floor ${floor}</h3>
+                        <p class="text-sm text-gray-600">${completedRoomsOnFloor} of ${roomKeys.length} rooms (${floorPercentage.toFixed(0)}%)</p>
+                    </div>
+                    ${progressHtml}
+                    <div class="flex flex-wrap gap-4 mt-6">
+                        ${roomsHtml}
+                    </div>
+                </div>
+            `;
+        }
+
+        /**
+         * Updates the entire dashboard UI based on the fetched data.
+         * @param {Object} roomData The object containing all room status data.
+         */
+        function updateDashboard(roomData) {
+            const floorProgressContainer = document.getElementById('floorProgress');
+            floorProgressContainer.innerHTML = '';
+            
+            // Group rooms by floor number
+            const floors = {};
+            for (const key in roomData) {
+                const floor = key.split('_')[0];
+                if (!floors[floor]) {
+                    floors[floor] = [];
+                }
+                floors[floor].push(key);
+            }
+            
+            let totalRoomsCompleted = 0;
+            let totalRooms = 0;
+            const sortedFloors = Object.keys(floors).sort((a, b) => parseInt(a) - parseInt(b));
+
+            sortedFloors.forEach(floor => {
+                const floorKeys = floors[floor];
+                totalRooms += floorKeys.length;
+                floorKeys.forEach(key => {
+                    if (roomData[key]) {
+                        totalRoomsCompleted++;
+                    }
+                });
+                floorProgressContainer.innerHTML += createFloorSection(floor, floorKeys, roomData);
+            });
+
+            // Calculate and display overall progress
+            const overallPercentage = totalRooms > 0 ? (totalRoomsCompleted / totalRooms) * 100 : 0;
+            document.getElementById('overallPercentageText').textContent = `${overallPercentage.toFixed(0)}%`;
+            document.getElementById('overallProgressBar').style.width = `${overallPercentage}%`;
+            
+            // Add click event listeners to each room box
+            document.querySelectorAll('.room-box').forEach(box => {
+                box.addEventListener('click', async () => {
+                    const roomKey = box.dataset.key;
+                    const docRef = doc(db, projectCollectionPath, roomKey);
+                    const docSnap = await getDoc(docRef);
+                    if (docSnap.exists()) {
+                        const currentStatus = docSnap.data().isInstalled;
+                        await updateRoomStatus(roomKey, !currentStatus);
+                    }
+                });
+            });
+        }
+    </script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap');
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f7f9fc;
+        }
+        .progress-bar {
+            transition: width 0.5s ease-in-out;
+        }
+    </style>
+</head>
+<body class="bg-gray-100 min-h-screen flex flex-col items-center p-8">
+    <div id="loadingIndicator" class="flex flex-col items-center justify-center h-full">
+        <div class="animate-spin rounded-full h-32 w-32 border-t-2 border-b-2 border-green-500"></div>
+        <p class="mt-4 text-gray-600 font-semibold">Loading data...</p>
+    </div>
+
+    <!-- Custom message box for user feedback -->
+    <div id="messageBox" class="hidden fixed bottom-8 left-1/2 -translate-x-1/2 p-4 rounded-lg bg-green-500 text-white font-semibold shadow-xl z-50">
+        <p id="messageText"></p>
+    </div>
+
+    <div id="errorContainer" class="hidden text-red-600 font-bold text-center mt-8 p-4 bg-red-100 rounded-lg">
+        <p>An error occurred. Please refresh the page.</p>
+    </div>
+
+    <div id="mainContent" class="hidden w-full max-w-6xl p-8 bg-white rounded-xl shadow-lg transform transition-all duration-300 hover:shadow-xl">
+        <div class="text-center mb-8">
+            <h1 class="text-4xl font-extrabold text-gray-900 mb-2">Live Project Progress Dashboard</h1>
+            <p class="text-gray-500 text-sm" id="userIdDisplay">Loading User ID...</p>
+        </div>
+        
+        <!-- Button to add sample data -->
+        <div class="text-center mb-8">
+            <button onclick="addSampleData()" class="px-4 py-2 bg-blue-500 text-white font-bold rounded-full shadow-lg hover:bg-blue-600 transition-colors duration-200">
+                Add Sample Data
+            </button>
+            <p class="text-gray-400 text-sm mt-2">Click this to get started and populate the dashboard with sample rooms.</p>
+        </div>
+
+        <!-- Overall Progress Section -->
+        <div class="mb-8 p-6 bg-green-50 rounded-xl border border-green-200 shadow-sm">
+            <h2 class="text-2xl font-bold text-green-700 mb-4">Overall Installation Progress</h2>
+            <div class="relative w-full h-12 bg-gray-200 rounded-full overflow-hidden shadow-inner">
+                <div id="overallProgressBar" class="absolute h-full bg-gradient-to-r from-green-400 to-green-600 rounded-full progress-bar" style="width: 0%;"></div>
+                <div class="absolute inset-0 flex items-center justify-center">
+                    <span id="overallPercentageText" class="text-xl font-bold text-white z-10">0%</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Individual Floor Progress Section -->
+        <div>
+            <h2 class="text-2xl font-bold text-gray-800 mb-4">Individual Floor Progress</h2>
+            <div id="floorProgress" class="space-y-6">
+                <!-- Floor and room sections will be dynamically inserted here by JavaScript -->
+            </div>
+        </div>
+    </div>
+</body>
+</html>
